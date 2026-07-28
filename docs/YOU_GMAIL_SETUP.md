@@ -10,8 +10,8 @@ GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
 Also keep:
 
 ```env
-GITHUB_TOKEN=...
-GITHUB_MODEL_ID=openai/gpt-5
+GEMINI_API_KEY=...
+GEMINI_MODEL_ID=gemini-2.5-flash
 ```
 
 ## Google Cloud checklist

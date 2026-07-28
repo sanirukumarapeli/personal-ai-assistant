@@ -1,3 +1,4 @@
+using PersonalAi.Api.Discord;
 using PersonalAi.Api.Telegram;
 using PersonalAi.Core;
 using PersonalAi.Core.Chat;
@@ -12,17 +13,23 @@ if (loadedEnv is not null)
     Console.WriteLine($"Loaded environment file: {loadedEnv}");
 }
 
-builder.Services.Configure<GitHubModelsOptions>(opts =>
+builder.Services.Configure<GeminiOptions>(opts =>
 {
-    opts.Token = Environment.GetEnvironmentVariable("GITHUB_TOKEN") ?? string.Empty;
-    opts.ModelId = Environment.GetEnvironmentVariable("GITHUB_MODEL_ID") ?? "openai/gpt-5";
-    opts.Endpoint = Environment.GetEnvironmentVariable("GITHUB_MODELS_ENDPOINT")
-                    ?? "https://models.github.ai/inference";
+    opts.ApiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? string.Empty;
+    opts.ModelId = Environment.GetEnvironmentVariable("GEMINI_MODEL_ID") ?? "gemini-3.5-flash-lite";
+    opts.Endpoint = Environment.GetEnvironmentVariable("GEMINI_ENDPOINT")
+                    ?? "https://generativelanguage.googleapis.com/v1beta/openai/";
 });
 
 builder.Services.Configure<TelegramOptions>(opts =>
 {
     opts.BotToken = Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN") ?? string.Empty;
+});
+
+builder.Services.Configure<DiscordOptions>(opts =>
+{
+    opts.BotToken = Environment.GetEnvironmentVariable("DISCORD_BOT_TOKEN") ?? string.Empty;
+    opts.AllowedUserIds = Environment.GetEnvironmentVariable("DISCORD_ALLOWED_USER_IDS") ?? string.Empty;
 });
 
 builder.Services.Configure<GoogleOptions>(opts =>
@@ -40,9 +47,12 @@ var dbPath = Path.Combine(dataDir, "sessions.db");
 builder.Services.AddSingleton<ISessionStore>(_ => new SqliteSessionStore(dbPath));
 builder.Services.AddSingleton<IGoogleTokenStore>(_ => new SqliteGoogleTokenStore(dbPath));
 builder.Services.AddSingleton<IPendingMailActions, PendingMailActions>();
+builder.Services.AddSingleton<IPendingCalendarActions, PendingCalendarActions>();
 builder.Services.AddSingleton<IGoogleAuthService, GoogleAuthService>();
 builder.Services.AddSingleton<IGmailMailService, GmailMailService>();
+builder.Services.AddSingleton<IGoogleCalendarService, GoogleCalendarService>();
 builder.Services.AddSingleton<IChatService, ChatService>();
+builder.Services.AddHostedService<DiscordBotHostedService>();
 builder.Services.AddHostedService<TelegramBotHostedService>();
 
 builder.Services.AddCors(options =>
@@ -63,8 +73,9 @@ app.MapGet("/health", async (IGoogleAuthService googleAuth, CancellationToken ct
     return Results.Ok(new
     {
         status = "ok",
-        model = Environment.GetEnvironmentVariable("GITHUB_MODEL_ID") ?? "openai/gpt-5",
-        githubTokenConfigured = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GITHUB_TOKEN")),
+        model = Environment.GetEnvironmentVariable("GEMINI_MODEL_ID") ?? "gemini-3.5-flash-lite",
+        geminiConfigured = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GEMINI_API_KEY")),
+        discordConfigured = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISCORD_BOT_TOKEN")),
         telegramConfigured = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN")),
         googleConfigured = googleAuth.IsConfigured,
         gmailConnected = connected,
@@ -104,8 +115,8 @@ app.MapGet("/signin-google", async (string? code, string? error, IGoogleAuthServ
         return Results.Content(
             $"""
              <html><body style="font-family:Segoe UI,sans-serif;max-width:560px;margin:3rem auto;">
-             <h1>Gmail connected</h1>
-             <p>Signed in as <strong>{email}</strong>.</p>
+             <h1>Google connected</h1>
+             <p>Signed in as <strong>{email}</strong> (Gmail + Calendar).</p>
              <p>You can close this tab and return to <a href="http://localhost:3000">the chat</a>.</p>
              </body></html>
              """,
@@ -156,6 +167,12 @@ app.MapPost("/v1/chat", async (ChatRequestDto body, IChatService chatService, Ca
     catch (ArgumentException ex)
     {
         return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(
+            new { error = $"Chat failed: {ex.Message}" },
+            statusCode: StatusCodes.Status500InternalServerError);
     }
 });
 

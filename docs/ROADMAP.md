@@ -2,12 +2,13 @@
 
 ## Status
 
-- [x] Chat + GitHub Models (`openai/gpt-5`)
+- [x] Chat + Google Gemini (`gemini-3.5-flash-lite`)
 - [x] Next.js web UI
 - [x] SQLite sessions
+- [x] Discord bot Gateway (optional token; preferred phone channel)
 - [x] Telegram long-polling (optional token)
 - [x] **Gmail OAuth + mail tools** (unread, search, drafts, draft+confirm-send)
-- [ ] Calendar (later)
+- [x] **Google Calendar tools** (list/search/get, availability, create/update/cancel with confirm)
 - [ ] Documents/PDF (later)
 
 ## Run
@@ -21,19 +22,26 @@ cd apps/web
 npm run dev
 ```
 
-## Gmail
+## Gmail + Calendar
 
 1. Put `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` in `.env` — see [YOU_GMAIL_SETUP.md](./YOU_GMAIL_SETUP.md)
-2. Open http://localhost:3000 → **Connect Gmail**
-3. Chat examples:
+2. Enable Calendar API + scopes — see [YOU_CALENDAR_SETUP.md](./YOU_CALENDAR_SETUP.md)
+3. Open http://localhost:3000 → **Connect Gmail** (grants mail + calendar; reconnect after adding calendar scopes)
+4. Chat examples:
    - What are my pending emails?
    - Find emails about invoices
    - What drafts do I have?
    - Draft an email to … / Yes, send it
+   - What’s on my calendar tomorrow?
+   - Am I free Friday 2–3pm?
+   - Create a 30-minute meeting tomorrow at 10am titled Team sync / Yes
+   - Move Team sync to 11am / Confirm
+   - Cancel Team sync / Yes
 
 ## Docs
 
 - [YOU_GMAIL_SETUP.md](./YOU_GMAIL_SETUP.md)
+- [YOU_CALENDAR_SETUP.md](./YOU_CALENDAR_SETUP.md)
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [DECISIONS.md](./DECISIONS.md)
 - [INDEX.md](./INDEX.md)

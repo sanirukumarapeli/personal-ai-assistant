@@ -2,6 +2,7 @@
 
 import { ArrowUp } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ThemeToggle } from "./theme-toggle";
 
 type ChatMessage = {
   id: string;
@@ -29,7 +30,7 @@ export default function HomePage() {
       id: "welcome",
       role: "system",
       content:
-        "Personal assistant ready. Connect Gmail, then try: “What are my pending emails?”, “Find emails about invoices”, “What drafts do I have?”, or “Draft an email to …”. Sending requires your confirmation.",
+        "Personal assistant ready. Connect Google (mail + calendar), then try: “What’s on tomorrow?”, “Remind me tomorrow at 9am to call mom”, “Am I free Friday 2–3pm?”, or “Draft an email to …”. Sending mail and calendar writes need your confirmation.",
     },
   ]);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -79,6 +80,7 @@ export default function HomePage() {
           message: text,
           sessionId: sessionId,
         }),
+        signal: AbortSignal.timeout(90_000),
       });
 
       const data = await response.json().catch(() => ({}));
@@ -97,9 +99,11 @@ export default function HomePage() {
       ]);
     } catch (err) {
       const message =
-        err instanceof Error
-          ? err.message
-          : "Could not reach the API. Is PersonalAi.Api running on port 5080?";
+        err instanceof DOMException && err.name === "TimeoutError"
+          ? "Request timed out. Gemini may be rate-limited — wait a minute and try again."
+          : err instanceof Error
+            ? err.message
+            : "Could not reach the API. Is PersonalAi.Api running on port 5080?";
       setError(message);
       setMessages((prev) => [
         ...prev,
@@ -130,14 +134,15 @@ export default function HomePage() {
           <h1 className="font-[family-name:var(--font-syne)] text-2xl font-semibold tracking-tight text-ink sm:text-3xl">
             Personal AI Assistant
           </h1>
-          <p className="mt-1 text-sm text-muted">Chat · Gmail tools</p>
+          <p className="mt-1 text-sm text-muted">Chat · Gmail · Calendar</p>
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <ThemeToggle />
             {gmail?.connected ? (
               <>
                 <span className="rounded-full bg-assistant/80 px-3 py-1 text-xs text-ink">
-                  Gmail: {gmail.email || "connected"}
+                  Google: {gmail.email || "connected"}
                 </span>
                 <button
                   type="button"
@@ -154,7 +159,7 @@ export default function HomePage() {
                 rel="noreferrer"
                 className="rounded-full bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink"
               >
-                Connect Gmail
+                Connect Google
               </a>
             )}
           </div>
@@ -225,7 +230,7 @@ export default function HomePage() {
 
         <div className="shrink-0 border-t border-border/80 bg-transparent pb-5 pt-3 sm:pb-7">
           <form
-            className="flex items-end gap-2 rounded-2xl border border-border bg-white/70 p-2 shadow-[0_8px_30px_rgba(15,23,42,0.04)] backdrop-blur-sm"
+            className="flex items-end gap-2 rounded-2xl border border-border bg-surface p-2 shadow-[var(--composer-shadow)] backdrop-blur-sm"
             onSubmit={onSubmit}
           >
             <textarea

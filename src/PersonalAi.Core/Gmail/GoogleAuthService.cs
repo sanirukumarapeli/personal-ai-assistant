@@ -1,8 +1,8 @@
-using System.Text;
 using System.Text.Json;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Auth.OAuth2.Flows;
 using Google.Apis.Auth.OAuth2.Responses;
+using Google.Apis.Calendar.v3;
 using Google.Apis.Gmail.v1;
 using Google.Apis.Services;
 using Microsoft.Extensions.Options;
@@ -18,6 +18,7 @@ public interface IGoogleAuthService
     Task<(bool Connected, string? Email)> GetStatusAsync(CancellationToken cancellationToken = default);
     Task DisconnectAsync(CancellationToken cancellationToken = default);
     Task<GmailService> CreateGmailServiceAsync(CancellationToken cancellationToken = default);
+    Task<CalendarService> CreateCalendarServiceAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class GoogleAuthService : IGoogleAuthService
@@ -94,12 +95,32 @@ public sealed class GoogleAuthService : IGoogleAuthService
 
     public async Task<GmailService> CreateGmailServiceAsync(CancellationToken cancellationToken = default)
     {
+        var credential = await CreateUserCredentialAsync(cancellationToken).ConfigureAwait(false);
+        return new GmailService(new BaseClientService.Initializer
+        {
+            HttpClientInitializer = credential,
+            ApplicationName = "Personal AI Assistant"
+        });
+    }
+
+    public async Task<CalendarService> CreateCalendarServiceAsync(CancellationToken cancellationToken = default)
+    {
+        var credential = await CreateUserCredentialAsync(cancellationToken).ConfigureAwait(false);
+        return new CalendarService(new BaseClientService.Initializer
+        {
+            HttpClientInitializer = credential,
+            ApplicationName = "Personal AI Assistant"
+        });
+    }
+
+    private async Task<UserCredential> CreateUserCredentialAsync(CancellationToken cancellationToken)
+    {
         EnsureConfigured();
         var record = await _tokenStore.GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
         if (record is null || string.IsNullOrWhiteSpace(record.RefreshToken))
         {
             throw new InvalidOperationException(
-                "Gmail is not connected. Open http://localhost:5080/auth/google to connect.");
+                "Google is not connected. Open http://localhost:5080/auth/google to connect.");
         }
 
         var flow = CreateFlow();
@@ -125,7 +146,7 @@ public sealed class GoogleAuthService : IGoogleAuthService
         {
             var refreshed = await credential.RefreshTokenAsync(cancellationToken).ConfigureAwait(false);
             if (!refreshed && string.IsNullOrWhiteSpace(credential.Token.AccessToken))
-                throw new InvalidOperationException("Could not refresh Google access token. Reconnect Gmail.");
+                throw new InvalidOperationException("Could not refresh Google access token. Reconnect Google.");
         }
 
         await _tokenStore.SaveAsync(
@@ -141,11 +162,7 @@ public sealed class GoogleAuthService : IGoogleAuthService
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return new GmailService(new BaseClientService.Initializer
-        {
-            HttpClientInitializer = credential,
-            ApplicationName = "Personal AI Assistant"
-        });
+        return credential;
     }
 
     private GoogleAuthorizationCodeFlow CreateFlow() =>

@@ -121,11 +121,11 @@ Optional (nice for device/local tools later): add a second redirect
 
 ## Step G — Final `.env` checklist
 
-Your repo-root `.env` should include (in addition to GitHub Models):
+Your repo-root `.env` should include (in addition to Gemini):
 
 ```env
-GITHUB_TOKEN=...
-GITHUB_MODEL_ID=openai/gpt-5
+GEMINI_API_KEY=...
+GEMINI_MODEL_ID=gemini-2.5-flash
 
 AZURE_CLIENT_ID=...
 AZURE_TENANT_ID=...

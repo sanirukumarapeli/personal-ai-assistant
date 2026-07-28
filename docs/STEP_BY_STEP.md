@@ -5,7 +5,7 @@ Work **one step at a time** in this Cursor chat. After each step: mark the check
 
 **How to use with the assistant**
 
-> “Do Step 1.1” / “I’m stuck on Step 2.2 — help me create the GitHub PAT” / “Implement Step 3”
+> “Do Step 1.1” / “I’m stuck on Step 0.3 — help me create the Gemini API key” / “Implement Step 3”
 
 ---
 
@@ -30,9 +30,9 @@ Work **one step at a time** in this Cursor chat. After each step: mark the check
 - [ ] **YOU:** Choose mail/calendar for v1  
   - Recommended start: **chat-only** (LLM works before mail)  
   - Next: **Outlook / Microsoft** *or* **Gmail / Google**
-- [ ] **YOU:** Choose default GitHub model id  
-  - Recommended: `openai/gpt-4o-mini` (cheap/fast for testing)  
-  - Or browse: https://github.com/marketplace/models
+- [ ] **YOU:** Choose default Gemini model id  
+  - Recommended: `gemini-2.5-flash`  
+  - Or lite: `gemini-2.5-flash-lite` — https://aistudio.google.com/
 - [ ] **CODE:** Update `docs/DECISIONS.md` “Still open” → chosen values
 
 **VERIFY:** `DECISIONS.md` has no critical “Open” items for channel + mail strategy.
@@ -57,35 +57,30 @@ git status
 
 ---
 
-### Step 0.3 — GitHub account + Models access
+### Step 0.3 — Google AI Studio (Gemini) access
 
-GitHub Models powers the brain of the assistant.
+Google Gemini powers the brain of the assistant.
 
-- [ ] **YOU:** Signed in to GitHub (https://github.com)
-- [ ] **YOU:** Open GitHub Models / Marketplace models and confirm you can see models  
-  - https://github.com/marketplace/models
-- [ ] **YOU:** Create a **fine-grained Personal Access Token**  
-  - GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens  
-  - Permission needed: **Models: Read** (`models:read`)  
-  - Copy the token once (starts like `github_pat_...` or similar)
+- [ ] **YOU:** Open Google AI Studio and create an API key  
+  - https://aistudio.google.com/apikey  
 - [ ] **YOU:** Create local `.env` from `.env.example` (never commit `.env`)
 
 ```env
-GITHUB_TOKEN=your_pat_here
-GITHUB_MODEL_ID=openai/gpt-4o-mini
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL_ID=gemini-2.5-flash
 ```
 
-**VERIFY (manual API smoke test later in Step 3):** token exists in `.env`, model id includes `publisher/name`.
+**VERIFY (manual API smoke test later in Step 3):** key exists in `.env`, model id is a Gemini Flash model.
 
 **Essential links**
 
-- Models catalog: https://github.com/marketplace/models  
-- Inference docs: https://docs.github.com/en/rest/models/inference  
-- Endpoint to use in code: `https://models.github.ai/inference`
+- Create key: https://aistudio.google.com/apikey  
+- OpenAI-compatible docs: https://ai.google.dev/gemini-api/docs/openai  
+- Endpoint: `https://generativelanguage.googleapis.com/v1beta/openai/`
 
 ---
 
-## Phase 1 — Runnable .NET app + GitHub Models chat
+## Phase 1 — Runnable .NET app + Gemini chat
 
 Goal: from your PC, send a message and get an LLM reply. No Telegram/mail yet.
 
@@ -109,21 +104,21 @@ dotnet build
 
 ### Step 1.2 — Config & secrets loading
 
-- [ ] **CODE:** Load `GITHUB_TOKEN` and `GITHUB_MODEL_ID` from env / user secrets / `.env`
-- [ ] **CODE:** Fail fast with a clear error if token missing
+- [ ] **CODE:** Load `GEMINI_API_KEY` and `GEMINI_MODEL_ID` from env / user secrets / `.env`
+- [ ] **CODE:** Fail fast with a clear error if key missing
 - [ ] **YOU:** Ensure `.env` is gitignored (already in `.gitignore`)
 
-**VERIFY:** App starts and logs “GitHub Models configured” (without printing the token).
+**VERIFY:** App starts and `/health` shows `geminiConfigured: true` (without printing the key).
 
 ---
 
-### Step 1.3 — Wire GitHub Models (OpenAI-compatible client)
+### Step 1.3 — Wire Gemini (OpenAI-compatible client)
 
 - [ ] **CODE:** Add OpenAI / `Microsoft.Extensions.AI` client packages
 - [ ] **CODE:** Point client to:
-  - Endpoint: `https://models.github.ai/inference`
-  - API key: `GITHUB_TOKEN`
-  - Model: `GITHUB_MODEL_ID` (e.g. `openai/gpt-4o-mini`)
+  - Endpoint: `https://generativelanguage.googleapis.com/v1beta/openai/`
+  - API key: `GEMINI_API_KEY`
+  - Model: `GEMINI_MODEL_ID` (e.g. `gemini-2.5-flash`)
 - [ ] **CODE:** Implement `ChatAsync(userMessage)` → assistant text
 
 **VERIFY:** Unit/integration or a tiny console/API call returns a non-empty reply.
@@ -344,9 +339,9 @@ Print this mentally — without these, the system cannot fully work:
 
 | # | External thing | Needed for | Status |
 |---|---|---|---|
-| 1 | GitHub account | LLM | required |
-| 2 | GitHub PAT (`models:read`) | GitHub Models API | required |
-| 3 | Chosen model id (`publisher/model`) | Inference | required |
+| 1 | Google account | LLM + optional Gmail | required |
+| 2 | Gemini API key (AI Studio) | Gemini inference | required |
+| 3 | Chosen model id (`gemini-2.5-flash`) | Inference | required |
 | 4 | Telegram BotFather token | Phone chat | required if Telegram path |
 | 5 | Public HTTPS URL / ngrok | Telegram **webhooks** only | optional if using long polling |
 | 6 | Entra app + secret + Graph permissions | Outlook mail/calendar | required if Microsoft path |
@@ -359,8 +354,8 @@ Print this mentally — without these, the system cannot fully work:
 
 If you want the fastest working assistant:
 
-1. **Phase 0** — decisions + GitHub PAT  
-2. **Phase 1** — .NET 10 + GitHub Models local chat  
+1. **Phase 0** — decisions + Gemini API key  
+2. **Phase 1** — .NET 10 + Gemini local chat  
 3. **Phase 2 Path A** — Telegram long polling  
 4. **Phase 3** — pick Outlook **or** Gmail (one only)  
 5. **Phase 4** — PDF  
@@ -375,15 +370,15 @@ Do **not** start mail/PDF before local chat works.
 | Phase | Status |
 |---|---|
 | 0 — Foundation folder/docs | **Done** (repo exists) |
-| 0.1 — Lock channel + mail choices | **Not done** |
-| 0.3 — GitHub PAT in `.env` | **Not done** (you) |
-| 1+ — Code | **Not started** |
+| 0.1 — Lock channel + mail choices | **Done** (Web + Gmail/Calendar) |
+| 0.3 — Gemini API key in `.env` | **You** — set `GEMINI_API_KEY` |
+| 1+ — Code | **Done** (chat, tools, Gemini wiring) |
 
 ---
 
 ## Next action right now
 
-1. **You:** Complete Step 0.1 (channel + mail + model) and Step 0.3 (GitHub PAT → `.env`)  
-2. **Then in this chat:** say **“Implement Step 1.1”** to scaffold the .NET 10 solution  
+1. **You:** Put `GEMINI_API_KEY` in `.env` (see [YOU_STEP_0.md](./YOU_STEP_0.md))  
+2. **Then:** `dotnet run --project src/PersonalAi.Api` and open http://localhost:3000  
 
 When a step is finished, check its box in this file so progress stays visible.

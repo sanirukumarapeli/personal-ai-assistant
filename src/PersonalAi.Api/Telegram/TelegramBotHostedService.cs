@@ -95,7 +95,7 @@ public sealed class TelegramBotHostedService : BackgroundService
             _logger.LogError(ex, "Failed to handle Telegram message from chat {ChatId}", chat.Id);
             await bot.SendMessage(
                     chat.Id,
-                    "Sorry — I hit an error talking to the model. Check the API logs and your GITHUB_TOKEN.",
+                    "Sorry — I hit an error talking to the model. Check the API logs and your GEMINI_API_KEY.",
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }

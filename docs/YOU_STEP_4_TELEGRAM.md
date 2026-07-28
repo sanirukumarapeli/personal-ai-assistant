@@ -25,7 +25,7 @@ You should see a log like: `Telegram bot @YourBot started (long polling).`
 
 ## 4. Test
 
-Message your bot on your phone. It uses the same GitHub Models brain as the web app.
+Message your bot on your phone. It uses the same Gemini brain as the web app.
 
 ## Notes
 
