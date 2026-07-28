@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+*.user
+node_modules/
+.next/
+apps/web/out/
+data/
+*.db
+*.db-shm
+*.db-wal

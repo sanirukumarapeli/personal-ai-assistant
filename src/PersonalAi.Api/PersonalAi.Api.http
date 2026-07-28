@@ -1,0 +1,6 @@
+@PersonalAi.Api_HostAddress = http://localhost:5164
+
+GET {{PersonalAi.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
