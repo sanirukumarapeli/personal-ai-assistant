@@ -9,7 +9,10 @@
 - [x] Telegram long-polling (optional token)
 - [x] **Gmail OAuth + mail tools** (unread, search, drafts, draft+confirm-send)
 - [x] **Google Calendar tools** (list/search/get, availability, create/update/cancel with confirm)
-- [ ] Documents/PDF (later)
+- [x] **Documents** (notes, PDF/Word/Excel/PowerPoint create, upload/extract/summarize/Q&A, rewrite with confirm)
+- [x] **Images** (upload + analyze via chat model; generate via `GEMINI_IMAGE_MODEL_ID`, no confirm)
+- [x] Web UX: session list, stop reply, files panel, mic/TTS, web_search + fetch_url
+- [ ] OCR / Drive sync (later)
 
 ## Run
 

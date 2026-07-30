@@ -11,6 +11,9 @@ public sealed class GeminiOptions
     public string ApiKey { get; set; } = string.Empty;
     public string ModelId { get; set; } = "gemini-3.5-flash-lite";
     public string Endpoint { get; set; } = "https://generativelanguage.googleapis.com/v1beta/openai/";
+
+    /// <summary>Dedicated Gemini image model for generate_image (not the chat model).</summary>
+    public string ImageModelId { get; set; } = "gemini-3.1-flash-image";
 }
 
 public sealed class TelegramOptions

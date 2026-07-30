@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { DM_Sans, Syne } from "next/font/google";
+import { DM_Sans, Source_Serif_4, Syne } from "next/font/google";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -14,9 +14,15 @@ const syne = Syne({
   display: "swap",
 });
 
+const sourceSerif = Source_Serif_4({
+  subsets: ["latin"],
+  variable: "--font-source-serif",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
-  title: "Personal AI Assistant",
-  description: "Personal chat assistant powered by Google Gemini",
+  title: "Midas Safety Assistant",
+  description: "Midas Safety personal AI assistant",
 };
 
 const themeInitScript = `
@@ -40,7 +46,9 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
-      <body className={`${dmSans.variable} ${syne.variable} antialiased`}>
+      <body
+        className={`${dmSans.variable} ${syne.variable} ${sourceSerif.variable} antialiased`}
+      >
         {children}
       </body>
     </html>

@@ -20,7 +20,7 @@ function applyTheme(theme: Theme) {
   document.documentElement.classList.toggle("dark", theme === "dark");
 }
 
-export function ThemeToggle() {
+export function ThemeToggle({ className }: { className?: string }) {
   const [theme, setTheme] = useState<Theme>("light");
   const [ready, setReady] = useState(false);
 
@@ -43,7 +43,10 @@ export function ThemeToggle() {
       type="button"
       onClick={toggle}
       aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-      className="flex size-8 items-center justify-center rounded-full border border-border text-muted transition-colors hover:text-ink"
+      className={
+        className ??
+        "flex size-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-ink"
+      }
     >
       {ready && theme === "dark" ? (
         <Sun className="size-4" strokeWidth={2} />

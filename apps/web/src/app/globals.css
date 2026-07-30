@@ -2,43 +2,46 @@
 
 :root {
   color-scheme: light;
-  --bg-start: #eef2f7;
-  --bg-end: #f8fafc;
-  --ink: #0f172a;
-  --muted: #64748b;
-  --accent: #0f172a;
-  --accent-ink: #f8fafc;
-  --user: #0f172a;
-  --assistant: #e2e8f0;
-  --border: #e2e8f0;
+  --sidebar: #eceeef;
+  --canvas: #f7f7f8;
+  --elevated: #ffffff;
+  --ink: #1a1a1a;
+  --muted: #737373;
+  --accent: #e6a800;
+  --accent-ink: #111111;
+  --user: #2a2a2a;
+  --assistant: transparent;
+  --border: #e5e5e5;
   --danger: #dc2626;
-  --surface: rgba(255, 255, 255, 0.7);
-  --composer-shadow: 0 8px 30px rgba(15, 23, 42, 0.04);
-  --wash-a: rgba(148, 163, 184, 0.28);
-  --wash-b: rgba(100, 116, 139, 0.12);
+  --surface: #ffffff;
+  --hover: rgba(0, 0, 0, 0.05);
+  --active-row: rgba(0, 0, 0, 0.07);
+  --composer-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
 }
 
 .dark {
   color-scheme: dark;
-  --bg-start: #0b1220;
-  --bg-end: #111827;
-  --ink: #e2e8f0;
-  --muted: #94a3b8;
-  --accent: #e2e8f0;
-  --accent-ink: #0f172a;
-  --user: #e2e8f0;
-  --assistant: #1e293b;
-  --border: #334155;
+  --sidebar: #141414;
+  --canvas: #1c1c1c;
+  --elevated: #2a2a2a;
+  --ink: #f5f5f5;
+  --muted: #a3a3a3;
+  --accent: #f5c400;
+  --accent-ink: #111111;
+  --user: #303030;
+  --assistant: transparent;
+  --border: #333333;
   --danger: #f87171;
-  --surface: rgba(30, 41, 59, 0.72);
-  --composer-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
-  --wash-a: rgba(56, 189, 248, 0.08);
-  --wash-b: rgba(99, 102, 241, 0.06);
+  --surface: #2a2a2a;
+  --hover: rgba(255, 255, 255, 0.06);
+  --active-row: rgba(255, 255, 255, 0.09);
+  --composer-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
 }
 
 @theme inline {
   --font-sans: var(--font-dm-sans), ui-sans-serif, system-ui, sans-serif;
   --font-display: var(--font-syne), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-source-serif), ui-serif, Georgia, serif;
   --font-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
   --color-ink: var(--ink);
   --color-muted: var(--muted);
@@ -49,6 +52,11 @@
   --color-border: var(--border);
   --color-danger: var(--danger);
   --color-surface: var(--surface);
+  --color-sidebar: var(--sidebar);
+  --color-canvas: var(--canvas);
+  --color-elevated: var(--elevated);
+  --color-hover: var(--hover);
+  --color-active-row: var(--active-row);
 }
 
 * {
@@ -62,14 +70,10 @@ body {
 }
 
 body {
-  background:
-    radial-gradient(ellipse 80% 50% at 20% -10%, var(--wash-a), transparent 55%),
-    radial-gradient(ellipse 60% 40% at 90% 10%, var(--wash-b), transparent 50%),
-    linear-gradient(180deg, var(--bg-start) 0%, var(--bg-end) 100%);
-  background-attachment: fixed;
+  background: var(--canvas);
   color: var(--ink);
   font-family: var(--font-sans);
-  transition: background 0.25s ease, color 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 button,
@@ -81,7 +85,7 @@ textarea {
 @keyframes message-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -116,4 +120,119 @@ textarea {
 
 .think-dot:nth-child(3) {
   animation-delay: 0.3s;
+}
+
+/* Assistant prose — Claude-like serif reading face */
+.msg-prose {
+  font-family: var(--font-serif);
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: inherit;
+  letter-spacing: -0.01em;
+}
+
+.msg-prose > :first-child {
+  margin-top: 0;
+}
+
+.msg-prose > :last-child {
+  margin-bottom: 0;
+}
+
+.msg-prose p {
+  margin: 0.65em 0;
+}
+
+.msg-prose strong {
+  font-weight: 600;
+}
+
+.msg-prose ul,
+.msg-prose ol {
+  margin: 0.65em 0;
+  padding-left: 1.35em;
+}
+
+.msg-prose li {
+  margin: 0.35em 0;
+}
+
+.msg-prose li > p {
+  margin: 0.15em 0;
+}
+
+.msg-prose h1,
+.msg-prose h2,
+.msg-prose h3 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 1em 0 0.45em;
+  line-height: 1.3;
+}
+
+.msg-prose h1 {
+  font-size: 1.35em;
+}
+
+.msg-prose h2 {
+  font-size: 1.2em;
+}
+
+.msg-prose h3 {
+  font-size: 1.1em;
+}
+
+.msg-prose a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.msg-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  padding: 0.12em 0.4em;
+  border-radius: 6px;
+  background: var(--hover);
+}
+
+.msg-prose pre {
+  margin: 0.85em 0;
+  padding: 0.9em 1.1em;
+  border-radius: 12px;
+  overflow-x: auto;
+  background: var(--elevated);
+}
+
+.msg-prose pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.msg-prose blockquote {
+  margin: 0.85em 0;
+  padding-left: 0.95em;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+
+.msg-prose hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.2em 0;
+}
+
+.msg-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.85em 0;
+  font-size: 0.92em;
+}
+
+.msg-prose th,
+.msg-prose td {
+  border: 1px solid var(--border);
+  padding: 0.45em 0.7em;
+  text-align: left;
 }

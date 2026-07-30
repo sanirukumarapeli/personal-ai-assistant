@@ -5,14 +5,20 @@ using System.Text.Json;
 using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Chat;
+using PersonalAi.Core.Documents;
 using PersonalAi.Core.Gmail;
+using PersonalAi.Core.Images;
 using PersonalAi.Core.Options;
+using PersonalAi.Core.Web;
 
 namespace PersonalAi.Core.Chat;
 
 public interface IChatService
 {
     Task<ChatResult> ChatAsync(ChatRequest request, CancellationToken cancellationToken = default);
+    PendingConfirmation? GetPending(string sessionId);
+    Task<ChatResult> ConfirmPendingAsync(string sessionId, CancellationToken cancellationToken = default);
+    Task<ChatResult> CancelPendingAsync(string sessionId, CancellationToken cancellationToken = default);
 }
 
 public sealed class ChatService : IChatService
@@ -24,6 +30,31 @@ public sealed class ChatService : IChatService
         "You are a helpful personal AI assistant for one user. Be concise, clear, and practical. " +
         "Gmail tools: list unread, search mail, list drafts, create drafts, send a draft. " +
         "Calendar tools: list/search/get events, check availability, propose create/update/cancel, then confirm or discard. " +
+        "Documents tools: save/search/read/delete markdown notes; create PDF/Word/Excel/PowerPoint; list documents; " +
+        "extract_document_text for uploaded PDF/Office/notes; analyze_image for uploaded or generated images; " +
+        "generate_image to create a new image immediately (no confirmation); " +
+        "rewrite_pdf / rewrite_word_document / rewrite_spreadsheet / rewrite_presentation to edit. " +
+        "Web tools: web_search for current info; fetch_url to read a specific https page. Cite URLs from tool results; do not invent links. " +
+        "User uploads PDF/Word/Excel/PowerPoint via the web UI into uploads — use list_documents then extract_document_text to summarize, extract text, or answer questions (only from extracted content). " +
+        "User uploads images (png/jpg/webp/gif) — use list_documents then analyze_image with a clear question (do NOT use extract_document_text on images). " +
+        "When the user asks to draw, generate, create, or make an image/picture/illustration/logo: " +
+        "call generate_image with a detailed, vivid English prompt that best matches their request (you invent the best prompt; do not ask them to confirm). " +
+        "Reply with the markdown image link from the tool result (prefer ![description](downloadUrl)). " +
+        "For letters/reports prefer Word; for tables/budgets prefer Excel; for printable one-pagers prefer PDF; " +
+        "for slide decks / presentations prefer PowerPoint (create_presentation with title + slides[{title,bullets}]); for quick recall prefer notes. " +
+        "After creating or rewriting a file, ALWAYS paste the exact downloadUrl from the tool result as a markdown link, e.g. " +
+        "[Download My-File.pdf](http://localhost:5080/v1/documents/pdfs/My-File.pdf). " +
+        "Never invent paths. Never say the link is relative, broken, or that the user must open files from disk. " +
+        "If they still cannot download, call list_documents and paste working downloadUrl markdown links again — " +
+        "do not apologize about relative links or tell them to open files from disk. " +
+        "Overwrite/rewrite of an existing file: call the rewrite tool without user_confirmed first to stage it; " +
+        "the UI shows Confirm/Cancel. After the user affirms, call confirm_document_action (or rewrite again with user_confirmed=true). " +
+        "Delete notes: call delete_note without user_confirmed to stage, then confirm_document_action after they affirm. " +
+        "When ANY pending confirmation exists (calendar, mail send, or document), treat clear affirming language " +
+        "(yes, yep, yeah, ok, okay, sure, go ahead, do it, please, confirm, ship it, proceed, sounds good, etc.) " +
+        "as confirmation — call the matching confirm tool with user_confirmed=true. Do not re-ask once intent is clear. " +
+        "Treat clear rejecting language (no, nope, cancel, never mind, discard, abort, stop, don't, scratch that, etc.) " +
+        "as cancel — call discard_calendar_action, discard_document_action, or discard_pending_draft as appropriate. " +
         "Understand natural language. Never invent special command phrases the user must type. " +
         "When the user asks if they are free 'this week' / 'this weak' (typo), treat it as the current calendar week " +
         "(local Monday 00:00 through Sunday 23:59:59) and call check_availability; also briefly list busy blocks if any. " +
@@ -34,14 +65,16 @@ public sealed class ChatService : IChatService
         "with reminder_minutes including 0 (notify at start). If they ask for '10 minutes before' / '30 min before', include those minutes too. " +
         "Still use propose_create_event then confirm — never write without confirmation. " +
         "NEVER send email unless the user clearly confirms. When creating a draft, show details and ask before send_draft. " +
+        "After create_draft, pending send is staged — affirming language should call send_draft with user_confirmed=true; " +
+        "rejecting language should call discard_pending_draft. " +
         "NEVER create, update, or cancel a calendar event until the user clearly confirms. " +
         "Workflow for calendar writes: resolve natural-language dates to ISO-8601 in the user's local timezone; " +
         "use list/search/get/check_availability as needed; call propose_*; show the proposal; after the user confirms " +
-        "(e.g. 'yes', 'confirm', 'do it'), call confirm_calendar_action with user_confirmed=true. " +
+        "(any clear affirmation, not only 'yes'/'confirm'), call confirm_calendar_action with user_confirmed=true. " +
         "If they change their mind, call discard_calendar_action. " +
         "For update/cancel, find the event first and use its event id. " +
         "If Google is not connected, tell them to open http://localhost:5080/auth/google. " +
-        "Do not invent email or calendar contents — only use tool results.";
+        "Do not invent email, calendar, or document contents — only use tool results.";
 
     private readonly ChatClient _chatClient;
     private readonly ISessionStore _sessionStore;
@@ -50,6 +83,10 @@ public sealed class ChatService : IChatService
     private readonly IGoogleAuthService _googleAuth;
     private readonly IPendingMailActions _pendingMail;
     private readonly IPendingCalendarActions _pendingCalendar;
+    private readonly IPendingDocumentActions _pendingDocuments;
+    private readonly IDocumentsService _documents;
+    private readonly IWebBrowseService _web;
+    private readonly IImageGenerationService _images;
     private readonly string _modelId;
     private readonly string _apiKey;
 
@@ -60,7 +97,11 @@ public sealed class ChatService : IChatService
         IGoogleCalendarService calendar,
         IGoogleAuthService googleAuth,
         IPendingMailActions pendingMail,
-        IPendingCalendarActions pendingCalendar)
+        IPendingCalendarActions pendingCalendar,
+        IPendingDocumentActions pendingDocuments,
+        IDocumentsService documents,
+        IWebBrowseService web,
+        IImageGenerationService images)
     {
         var opts = options.Value;
         _apiKey = opts.ApiKey?.Trim() ?? string.Empty;
@@ -85,6 +126,10 @@ public sealed class ChatService : IChatService
         _googleAuth = googleAuth;
         _pendingMail = pendingMail;
         _pendingCalendar = pendingCalendar;
+        _pendingDocuments = pendingDocuments;
+        _documents = documents;
+        _web = web;
+        _images = images;
     }
 
     public async Task<ChatResult> ChatAsync(ChatRequest request, CancellationToken cancellationToken = default)
@@ -114,9 +159,7 @@ public sealed class ChatService : IChatService
             ? $"Google is connected as {googleEmail ?? "unknown"}. Use Gmail and Calendar tools when needed; do not ask the user to connect unless a tool returns a permission/reconnect error."
             : "Google is NOT connected. For mail/calendar, tell the user to click Connect Google in the UI (or open http://localhost:5080/auth/google).";
 
-        var pendingNote = _pendingCalendar.TryGet(sessionId, out var pending)
-            ? $" There is a pending calendar {pending.Kind.ToString().ToLowerInvariant()} awaiting confirmation: {pending.SummaryForUser}."
-            : string.Empty;
+        var pendingNote = BuildPendingSystemNote(sessionId);
 
         var messages = new List<ChatMessage>
         {
@@ -146,7 +189,11 @@ public sealed class ChatService : IChatService
             reply = await CompleteWithToolsAsync(messages, options, sessionId, ct)
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
         {
             throw new InvalidOperationException(
                 "Gemini took too long (likely rate-limited or overloaded). Wait a minute and try again.");
@@ -183,7 +230,159 @@ public sealed class ChatService : IChatService
                 ct)
             .ConfigureAwait(false);
 
-        return new ChatResult(sessionId, reply);
+        return new ChatResult(sessionId, reply, GetPending(sessionId));
+    }
+
+    public PendingConfirmation? GetPending(string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+            return null;
+
+        if (_pendingCalendar.TryGet(sessionId, out var cal))
+        {
+            var kind = cal.Kind switch
+            {
+                PendingCalendarKind.Create => "calendar_create",
+                PendingCalendarKind.Update => "calendar_update",
+                PendingCalendarKind.Cancel => "calendar_cancel",
+                _ => "calendar"
+            };
+            return new PendingConfirmation(kind, cal.SummaryForUser);
+        }
+
+        if (_pendingMail.TryGetPendingDraft(sessionId, out _, out var mailSummary))
+            return new PendingConfirmation("mail_send", mailSummary);
+
+        if (_pendingDocuments.TryGet(sessionId, out var doc))
+        {
+            var kind = doc.Kind == PendingDocumentKind.NoteDelete
+                ? "note_delete"
+                : "document_overwrite";
+            return new PendingConfirmation(kind, doc.SummaryForUser);
+        }
+
+        return null;
+    }
+
+    public async Task<ChatResult> ConfirmPendingAsync(
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+            throw new ArgumentException("sessionId is required.", nameof(sessionId));
+
+        string reply;
+        if (_pendingCalendar.TryGet(sessionId, out _))
+        {
+            using var doc = JsonDocument.Parse("""{"user_confirmed":true}""");
+            var raw = await ConfirmCalendarActionAsync(doc.RootElement, sessionId, cancellationToken)
+                .ConfigureAwait(false);
+            reply = FormatToolResultAsReply(raw, successFallback: "Confirmed. The calendar change was applied.");
+        }
+        else if (_pendingMail.TryGetPendingDraft(sessionId, out _, out _))
+        {
+            using var doc = JsonDocument.Parse("""{"user_confirmed":true}""");
+            var raw = await SendDraftAsync(doc.RootElement, sessionId, cancellationToken).ConfigureAwait(false);
+            reply = FormatToolResultAsReply(raw, successFallback: "Confirmed. The draft was sent.");
+        }
+        else if (_pendingDocuments.TryGet(sessionId, out _))
+        {
+            var raw = ConfirmDocumentAction(sessionId);
+            reply = FormatToolResultAsReply(raw, successFallback: "Confirmed. The document change was applied.");
+        }
+        else
+        {
+            reply = "Nothing is waiting for confirmation.";
+        }
+
+        await _sessionStore.AppendAsync(
+                sessionId,
+                new ChatTurn("user", "Confirm"),
+                new ChatTurn("assistant", reply),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return new ChatResult(sessionId, reply, GetPending(sessionId));
+    }
+
+    public async Task<ChatResult> CancelPendingAsync(
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+            throw new ArgumentException("sessionId is required.", nameof(sessionId));
+
+        string reply;
+        if (_pendingCalendar.TryGet(sessionId, out _))
+        {
+            reply = FormatToolResultAsReply(
+                DiscardCalendarAction(sessionId),
+                successFallback: "Cancelled. The pending calendar action was discarded.");
+        }
+        else if (_pendingMail.TryGetPendingDraft(sessionId, out _, out _))
+        {
+            reply = FormatToolResultAsReply(
+                DiscardPendingDraft(sessionId),
+                successFallback: "Cancelled. The draft will not be sent.");
+        }
+        else if (_pendingDocuments.TryGet(sessionId, out _))
+        {
+            reply = FormatToolResultAsReply(
+                DiscardDocumentAction(sessionId),
+                successFallback: "Cancelled. The pending document change was discarded.");
+        }
+        else
+        {
+            reply = "Nothing is waiting for confirmation.";
+        }
+
+        await _sessionStore.AppendAsync(
+                sessionId,
+                new ChatTurn("user", "Cancel"),
+                new ChatTurn("assistant", reply),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return new ChatResult(sessionId, reply, GetPending(sessionId));
+    }
+
+    private string BuildPendingSystemNote(string sessionId)
+    {
+        var pending = GetPending(sessionId);
+        if (pending is null)
+            return string.Empty;
+
+        return $" There is a pending confirmation ({pending.Kind}): {pending.Summary}. " +
+               "If the user affirms, confirm it with the matching tool; if they reject, discard it.";
+    }
+
+    private static string FormatToolResultAsReply(string rawJson, string successFallback)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            if (doc.RootElement.TryGetProperty("error", out var err))
+                return err.GetString() ?? "Something went wrong.";
+            if (doc.RootElement.TryGetProperty("markdownLink", out var link))
+            {
+                var name = doc.RootElement.TryGetProperty("name", out var n) ? n.GetString() : "file";
+                return $"Done. {link.GetString() ?? $"[Download {name}]"}";
+            }
+            if (doc.RootElement.TryGetProperty("sent", out var sent) && sent.ValueKind == JsonValueKind.True)
+                return "Done — the email was sent.";
+            if (doc.RootElement.TryGetProperty("deleted", out var del) && del.ValueKind == JsonValueKind.True)
+                return "Done — the note was deleted.";
+            if (doc.RootElement.TryGetProperty("discarded", out var disc) && disc.ValueKind == JsonValueKind.True)
+                return successFallback;
+            if (doc.RootElement.TryGetProperty("applied", out var applied) && applied.ValueKind == JsonValueKind.True)
+                return successFallback;
+        }
+        catch
+        {
+            // fall through
+        }
+
+        return successFallback;
     }
 
     private static string FormatGemini404Message(string modelId, ClientResultException ex)
@@ -247,6 +446,8 @@ public sealed class ChatService : IChatService
         const int maxRounds = 8;
         for (var round = 0; round < maxRounds; round++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             ChatCompletion completion = await _chatClient
                 .CompleteChatAsync(messages, options, cancellationToken)
                 .ConfigureAwait(false);
@@ -258,6 +459,7 @@ public sealed class ChatService : IChatService
 
                 foreach (var call in completion.ToolCalls)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var result = await ExecuteToolAsync(call, sessionId, cancellationToken).ConfigureAwait(false);
                     messages.Add(new ToolChatMessage(call.Id, result));
                 }
@@ -336,6 +538,15 @@ public sealed class ChatService : IChatService
                     "user_confirmed": { "type": "boolean", "description": "Must be true; user explicitly confirmed send." }
                   },
                   "required": ["user_confirmed"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "discard_pending_draft",
+            "Discard the pending send confirmation for the latest draft in this chat (does not delete the Gmail draft).",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {}
                 }
                 """u8.ToArray())),
         ChatTool.CreateFunctionTool(
@@ -470,6 +681,305 @@ public sealed class ChatService : IChatService
                   "type": "object",
                   "properties": {}
                 }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "confirm_document_action",
+            "Apply a staged document overwrite or note delete after the user confirms.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "user_confirmed": { "type": "boolean" }
+                  },
+                  "required": ["user_confirmed"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "discard_document_action",
+            "Discard a staged document overwrite or note delete without applying it.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {}
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "list_notes",
+            "List saved markdown notes.",
+            BinaryData.FromBytes("""
+                { "type": "object", "properties": {} }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "search_notes",
+            "Search markdown notes by title or content.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "query": { "type": "string" }
+                  },
+                  "required": ["query"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "read_note",
+            "Read a markdown note by file name (e.g. grocery-list.md).",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" }
+                  },
+                  "required": ["name"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "save_note",
+            "Create or update a markdown note under data/notes.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "title": { "type": "string" },
+                    "content": { "type": "string" }
+                  },
+                  "required": ["title", "content"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "delete_note",
+            "Delete a markdown note. Without user_confirmed, stages deletion for Confirm/Cancel. With user_confirmed=true, deletes immediately (or applies staged delete).",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "user_confirmed": { "type": "boolean" }
+                  },
+                  "required": ["name"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "create_pdf",
+            "Generate a PDF document (title + body text).",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "title": { "type": "string" },
+                    "content": { "type": "string" }
+                  },
+                  "required": ["title", "content"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "create_word_document",
+            "Generate a Word (.docx) document.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "title": { "type": "string" },
+                    "content": { "type": "string" }
+                  },
+                  "required": ["title", "content"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "create_spreadsheet",
+            "Generate an Excel (.xlsx) spreadsheet from headers and rows.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "title": { "type": "string" },
+                    "headers": { "type": "array", "items": { "type": "string" } },
+                    "rows": {
+                      "type": "array",
+                      "items": { "type": "array", "items": { "type": "string" } }
+                    }
+                  },
+                  "required": ["title", "headers", "rows"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "create_presentation",
+            "Generate a PowerPoint (.pptx) from a title and slides (each with title + bullet points).",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "title": { "type": "string" },
+                    "slides": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "title": { "type": "string" },
+                          "bullets": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["title", "bullets"]
+                      }
+                    }
+                  },
+                  "required": ["title", "slides"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "list_documents",
+            "List all local documents (notes, generated PDFs/Office/images, and uploads).",
+            BinaryData.FromBytes("""
+                { "type": "object", "properties": {} }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "extract_document_text",
+            "Extract text from a PDF, Word, Excel, PowerPoint, or note file for summarize / Q&A / text extract. Prefer uploaded file names from list_documents. Do not use for images — use analyze_image.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "folder": { "type": "string", "description": "Optional: notes|pdfs|office|uploads" },
+                    "max_chars": { "type": "integer", "default": 40000 }
+                  },
+                  "required": ["name"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "analyze_image",
+            "Analyze an uploaded or generated image (png/jpg/webp/gif) with vision. Use after list_documents for image files.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string", "description": "File name, e.g. photo.png" },
+                    "folder": { "type": "string", "description": "Optional; usually uploads" },
+                    "question": { "type": "string", "description": "What to look for or describe" }
+                  },
+                  "required": ["name", "question"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "generate_image",
+            "Generate an image immediately from a detailed English prompt. No user confirmation. Returns downloadUrl for markdown.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "prompt": {
+                      "type": "string",
+                      "description": "Detailed vivid English image prompt matching the user request"
+                    },
+                    "file_name": {
+                      "type": "string",
+                      "description": "Optional short file stem without extension"
+                    }
+                  },
+                  "required": ["prompt"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "rewrite_pdf",
+            "Rewrite/regenerate a PDF. Overwrite requires user_confirmed=true; or pass save_as for a new file.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "title": { "type": "string" },
+                    "content": { "type": "string" },
+                    "user_confirmed": { "type": "boolean" },
+                    "save_as": { "type": "string" }
+                  },
+                  "required": ["name", "title", "content"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "rewrite_word_document",
+            "Rewrite a Word (.docx) file. Overwrite requires user_confirmed=true; or pass save_as.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "title": { "type": "string" },
+                    "content": { "type": "string" },
+                    "user_confirmed": { "type": "boolean" },
+                    "save_as": { "type": "string" }
+                  },
+                  "required": ["name", "title", "content"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "rewrite_spreadsheet",
+            "Rewrite an Excel (.xlsx) file with new headers/rows. Overwrite requires user_confirmed=true; or pass save_as.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "headers": { "type": "array", "items": { "type": "string" } },
+                    "rows": {
+                      "type": "array",
+                      "items": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "user_confirmed": { "type": "boolean" },
+                    "save_as": { "type": "string" }
+                  },
+                  "required": ["name", "headers", "rows"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "rewrite_presentation",
+            "Rewrite/regenerate a PowerPoint (.pptx). Overwrite requires user_confirmed=true; or pass save_as.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "title": { "type": "string" },
+                    "slides": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "title": { "type": "string" },
+                          "bullets": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["title", "bullets"]
+                      }
+                    },
+                    "user_confirmed": { "type": "boolean" },
+                    "save_as": { "type": "string" }
+                  },
+                  "required": ["name", "title", "slides"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "web_search",
+            "Search the public web (DuckDuckGo) for current information. Return titles, URLs, snippets.",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "query": { "type": "string" },
+                    "max": { "type": "integer", "default": 5 }
+                  },
+                  "required": ["query"]
+                }
+                """u8.ToArray())),
+        ChatTool.CreateFunctionTool(
+            "fetch_url",
+            "Fetch and extract readable text from an http/https URL (not localhost/private IPs).",
+            BinaryData.FromBytes("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "url": { "type": "string" },
+                    "max_chars": { "type": "integer", "default": 12000 }
+                  },
+                  "required": ["url"]
+                }
                 """u8.ToArray()))
     ];
 
@@ -491,6 +1001,7 @@ public sealed class ChatService : IChatService
                 "list_drafts" => await ListDraftsAsync(root, cancellationToken).ConfigureAwait(false),
                 "create_draft" => await CreateDraftAsync(root, sessionId, cancellationToken).ConfigureAwait(false),
                 "send_draft" => await SendDraftAsync(root, sessionId, cancellationToken).ConfigureAwait(false),
+                "discard_pending_draft" => DiscardPendingDraft(sessionId),
                 "list_events" => await ListEventsAsync(root, cancellationToken).ConfigureAwait(false),
                 "get_event" => await GetEventAsync(root, cancellationToken).ConfigureAwait(false),
                 "search_events" => await SearchEventsAsync(root, cancellationToken).ConfigureAwait(false),
@@ -500,6 +1011,27 @@ public sealed class ChatService : IChatService
                 "propose_cancel_event" => await ProposeCancelEventAsync(root, sessionId, cancellationToken).ConfigureAwait(false),
                 "confirm_calendar_action" => await ConfirmCalendarActionAsync(root, sessionId, cancellationToken).ConfigureAwait(false),
                 "discard_calendar_action" => DiscardCalendarAction(sessionId),
+                "confirm_document_action" => ConfirmDocumentActionTool(root, sessionId),
+                "discard_document_action" => DiscardDocumentAction(sessionId),
+                "list_notes" => JsonSerializer.Serialize(new { notes = _documents.ListNotes() }),
+                "search_notes" => SearchNotesTool(root),
+                "read_note" => ReadNoteTool(root),
+                "save_note" => SaveNoteTool(root),
+                "delete_note" => DeleteNoteTool(root, sessionId),
+                "create_pdf" => CreatePdfTool(root),
+                "create_word_document" => CreateWordTool(root),
+                "create_spreadsheet" => CreateSpreadsheetTool(root),
+                "create_presentation" => CreatePresentationTool(root),
+                "list_documents" => JsonSerializer.Serialize(new { documents = _documents.ListAllDocuments() }),
+                "extract_document_text" => ExtractDocumentTool(root),
+                "analyze_image" => await AnalyzeImageToolAsync(root, cancellationToken).ConfigureAwait(false),
+                "generate_image" => await GenerateImageToolAsync(root, cancellationToken).ConfigureAwait(false),
+                "rewrite_pdf" => RewritePdfTool(root, sessionId),
+                "rewrite_word_document" => RewriteWordTool(root, sessionId),
+                "rewrite_spreadsheet" => RewriteSpreadsheetTool(root, sessionId),
+                "rewrite_presentation" => RewritePresentationTool(root, sessionId),
+                "web_search" => await WebSearchToolAsync(root, cancellationToken).ConfigureAwait(false),
+                "fetch_url" => await FetchUrlToolAsync(root, cancellationToken).ConfigureAwait(false),
                 _ => JsonSerializer.Serialize(new { error = $"Unknown tool: {call.FunctionName}" })
             };
         }
@@ -868,6 +1400,492 @@ public sealed class ChatService : IChatService
             .OrderBy(m => m)
             .Take(5)
             .ToList();
+    }
+
+    private string SearchNotesTool(JsonElement root)
+    {
+        var query = root.TryGetProperty("query", out var q) ? q.GetString() ?? "" : "";
+        return JsonSerializer.Serialize(new { notes = _documents.SearchNotes(query) });
+    }
+
+    private string ReadNoteTool(JsonElement root)
+    {
+        var name = RequiredString(root, "name");
+        return JsonSerializer.Serialize(_documents.ReadNote(name));
+    }
+
+    private string SaveNoteTool(JsonElement root)
+    {
+        var title = RequiredString(root, "title");
+        var content = RequiredString(root, "content");
+        return JsonSerializer.Serialize(_documents.SaveNote(title, content));
+    }
+
+    private string DeleteNoteTool(JsonElement root, string sessionId)
+    {
+        var name = RequiredString(root, "name");
+        var confirmed = root.TryGetProperty("user_confirmed", out var conf) && conf.ValueKind == JsonValueKind.True;
+        if (!confirmed)
+        {
+            var summary = $"Delete note '{name}'";
+            _pendingDocuments.Set(sessionId, new PendingDocumentAction(
+                PendingDocumentKind.NoteDelete,
+                summary,
+                name));
+            return JsonSerializer.Serialize(new
+            {
+                needsConfirmation = true,
+                kind = "note_delete",
+                summary,
+                note = "Ask the user to confirm. UI shows Confirm/Cancel. Or call confirm_document_action after they affirm."
+            });
+        }
+
+        _documents.DeleteNote(name);
+        _pendingDocuments.Clear(sessionId);
+        return JsonSerializer.Serialize(new { deleted = true, name });
+    }
+
+    private string CreatePdfTool(JsonElement root)
+    {
+        var title = RequiredString(root, "title");
+        var content = RequiredString(root, "content");
+        return SerializeCreatedDocument(_documents.CreatePdf(title, content));
+    }
+
+    private string CreateWordTool(JsonElement root)
+    {
+        var title = RequiredString(root, "title");
+        var content = RequiredString(root, "content");
+        return SerializeCreatedDocument(_documents.CreateWordDocument(title, content));
+    }
+
+    private string CreateSpreadsheetTool(JsonElement root)
+    {
+        var title = RequiredString(root, "title");
+        var headers = ParseStringArray(root, "headers");
+        var rows = ParseStringMatrix(root, "rows");
+        return SerializeCreatedDocument(_documents.CreateSpreadsheet(title, headers, rows));
+    }
+
+    private string CreatePresentationTool(JsonElement root)
+    {
+        var title = RequiredString(root, "title");
+        var slides = ParsePresentationSlides(root, "slides");
+        return SerializeCreatedDocument(_documents.CreatePresentation(title, slides));
+    }
+
+    private string ExtractDocumentTool(JsonElement root)
+    {
+        var name = RequiredString(root, "name");
+        var folder = root.TryGetProperty("folder", out var f) ? f.GetString() : null;
+        var max = root.TryGetProperty("max_chars", out var m) && m.TryGetInt32(out var n) ? n : 40_000;
+        return JsonSerializer.Serialize(_documents.ExtractDocumentText(name, folder, max));
+    }
+
+    private async Task<string> AnalyzeImageToolAsync(JsonElement root, CancellationToken cancellationToken)
+    {
+        var name = RequiredString(root, "name");
+        var folder = root.TryGetProperty("folder", out var f) ? f.GetString() : null;
+        var question = RequiredString(root, "question");
+
+        if (!_documents.IsImageDocument(name))
+        {
+            return JsonSerializer.Serialize(new
+            {
+                error = "Not an image file. Use extract_document_text for PDF/Office/notes, or pass a .png/.jpg/.webp/.gif name."
+            });
+        }
+
+        var folderKey = string.IsNullOrWhiteSpace(folder) ? DocumentsService.FolderUploads : folder.Trim();
+        var path = _documents.ResolveAbsolutePath(folderKey, name)
+                   ?? _documents.ResolveAbsolutePath(DocumentsService.FolderUploads, name)
+                   ?? throw new FileNotFoundException($"Image not found: {name}");
+
+        var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        if (bytes.Length > DocumentsService.MaxUploadBytes)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                error = $"Image too large for analysis (max {DocumentsService.MaxUploadBytes / (1024 * 1024)} MB)."
+            });
+        }
+
+        var mime = _documents.ContentTypeFor(DocumentsService.FolderUploads, Path.GetFileName(path));
+        if (!mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            mime = "image/png";
+
+        var userMessage = new UserChatMessage(
+            ChatMessageContentPart.CreateTextPart(
+                $"Analyze this image named '{Path.GetFileName(path)}'. User question: {question}"),
+            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(bytes), mime));
+
+        var completion = await _chatClient.CompleteChatAsync(
+                [new SystemChatMessage(
+                        "You analyze images for a personal assistant. Answer the user's question clearly and factually. " +
+                        "Do not invent details that are not visible."),
+                    userMessage],
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        var analysis = completion.Value.Content.Count > 0
+            ? string.Concat(completion.Value.Content.Select(p => p.Text)).Trim()
+            : "(No analysis returned.)";
+
+        return JsonSerializer.Serialize(new
+        {
+            name = Path.GetFileName(path),
+            folder = folderKey,
+            question,
+            analysis,
+            downloadUrl = $"http://localhost:5080/v1/documents/{DocumentsService.FolderUploads}/{Uri.EscapeDataString(Path.GetFileName(path))}"
+        });
+    }
+
+    private async Task<string> GenerateImageToolAsync(JsonElement root, CancellationToken cancellationToken)
+    {
+        var prompt = RequiredString(root, "prompt");
+        var fileName = OptionalString(root, "file_name");
+
+        var generated = await _images.GenerateAsync(prompt, cancellationToken).ConfigureAwait(false);
+        var ext = generated.MimeType.Contains("jpeg", StringComparison.OrdinalIgnoreCase)
+                  || generated.MimeType.Contains("jpg", StringComparison.OrdinalIgnoreCase)
+            ? ".jpg"
+            : generated.MimeType.Contains("webp", StringComparison.OrdinalIgnoreCase)
+                ? ".webp"
+                : ".png";
+
+        var saved = _documents.SaveGeneratedImage(generated.Bytes, fileName ?? "generated-image", ext);
+        return JsonSerializer.Serialize(new
+        {
+            created = true,
+            prompt,
+            name = saved.Name,
+            folder = saved.Folder,
+            kind = saved.Kind,
+            downloadUrl = saved.DownloadUrl,
+            markdown = $"![{saved.Name}]({saved.DownloadUrl})",
+            modelNote = generated.ModelText
+        });
+    }
+
+    private string RewritePdfTool(JsonElement root, string sessionId)
+    {
+        var name = RequiredString(root, "name");
+        var title = RequiredString(root, "title");
+        var content = RequiredString(root, "content");
+        var saveAs = OptionalString(root, "save_as");
+        var overwrite = root.TryGetProperty("user_confirmed", out var c) && c.ValueKind == JsonValueKind.True;
+        try
+        {
+            var result = _documents.RewritePdf(name, title, content, overwrite, saveAs);
+            _pendingDocuments.Clear(sessionId);
+            return SerializeCreatedDocument(result);
+        }
+        catch (InvalidOperationException ex) when (!overwrite)
+        {
+            var summary = $"Overwrite PDF '{name}'" + (string.IsNullOrWhiteSpace(saveAs) ? "" : $" as '{saveAs}'");
+            _pendingDocuments.Set(sessionId, new PendingDocumentAction(
+                PendingDocumentKind.RewritePdf,
+                summary,
+                name,
+                Title: title,
+                Body: content,
+                SaveAs: saveAs));
+            return JsonSerializer.Serialize(new
+            {
+                needsConfirmation = true,
+                kind = "document_overwrite",
+                summary,
+                detail = ex.Message,
+                note = "Ask the user to confirm overwrite. UI shows Confirm/Cancel."
+            });
+        }
+    }
+
+    private string RewriteWordTool(JsonElement root, string sessionId)
+    {
+        var name = RequiredString(root, "name");
+        var title = RequiredString(root, "title");
+        var content = RequiredString(root, "content");
+        var saveAs = OptionalString(root, "save_as");
+        var overwrite = root.TryGetProperty("user_confirmed", out var c) && c.ValueKind == JsonValueKind.True;
+        try
+        {
+            var result = _documents.RewriteWord(name, title, content, overwrite, saveAs);
+            _pendingDocuments.Clear(sessionId);
+            return SerializeCreatedDocument(result);
+        }
+        catch (InvalidOperationException ex) when (!overwrite)
+        {
+            var summary = $"Overwrite Word doc '{name}'" + (string.IsNullOrWhiteSpace(saveAs) ? "" : $" as '{saveAs}'");
+            _pendingDocuments.Set(sessionId, new PendingDocumentAction(
+                PendingDocumentKind.RewriteWord,
+                summary,
+                name,
+                Title: title,
+                Body: content,
+                SaveAs: saveAs));
+            return JsonSerializer.Serialize(new
+            {
+                needsConfirmation = true,
+                kind = "document_overwrite",
+                summary,
+                detail = ex.Message,
+                note = "Ask the user to confirm overwrite. UI shows Confirm/Cancel."
+            });
+        }
+    }
+
+    private string RewriteSpreadsheetTool(JsonElement root, string sessionId)
+    {
+        var name = RequiredString(root, "name");
+        var headers = ParseStringArray(root, "headers");
+        var rows = ParseStringMatrix(root, "rows");
+        var saveAs = OptionalString(root, "save_as");
+        var overwrite = root.TryGetProperty("user_confirmed", out var c) && c.ValueKind == JsonValueKind.True;
+        try
+        {
+            var result = _documents.RewriteSpreadsheet(name, headers, rows, overwrite, saveAs);
+            _pendingDocuments.Clear(sessionId);
+            return SerializeCreatedDocument(result);
+        }
+        catch (InvalidOperationException ex) when (!overwrite)
+        {
+            var summary = $"Overwrite spreadsheet '{name}'" + (string.IsNullOrWhiteSpace(saveAs) ? "" : $" as '{saveAs}'");
+            _pendingDocuments.Set(sessionId, new PendingDocumentAction(
+                PendingDocumentKind.RewriteSpreadsheet,
+                summary,
+                name,
+                HeadersJson: PendingDocumentPayload.SerializeHeaders(headers),
+                RowsJson: PendingDocumentPayload.SerializeRows(rows),
+                SaveAs: saveAs));
+            return JsonSerializer.Serialize(new
+            {
+                needsConfirmation = true,
+                kind = "document_overwrite",
+                summary,
+                detail = ex.Message,
+                note = "Ask the user to confirm overwrite. UI shows Confirm/Cancel."
+            });
+        }
+    }
+
+    private string RewritePresentationTool(JsonElement root, string sessionId)
+    {
+        var name = RequiredString(root, "name");
+        var title = RequiredString(root, "title");
+        var slides = ParsePresentationSlides(root, "slides");
+        var saveAs = OptionalString(root, "save_as");
+        var overwrite = root.TryGetProperty("user_confirmed", out var c) && c.ValueKind == JsonValueKind.True;
+        try
+        {
+            var result = _documents.RewritePresentation(name, title, slides, overwrite, saveAs);
+            _pendingDocuments.Clear(sessionId);
+            return SerializeCreatedDocument(result);
+        }
+        catch (InvalidOperationException ex) when (!overwrite)
+        {
+            var summary = $"Overwrite presentation '{name}'" + (string.IsNullOrWhiteSpace(saveAs) ? "" : $" as '{saveAs}'");
+            _pendingDocuments.Set(sessionId, new PendingDocumentAction(
+                PendingDocumentKind.RewritePresentation,
+                summary,
+                name,
+                Title: title,
+                SlidesJson: PendingDocumentPayload.SerializeSlides(slides),
+                SaveAs: saveAs));
+            return JsonSerializer.Serialize(new
+            {
+                needsConfirmation = true,
+                kind = "document_overwrite",
+                summary,
+                detail = ex.Message,
+                note = "Ask the user to confirm overwrite. UI shows Confirm/Cancel."
+            });
+        }
+    }
+
+    private string ConfirmDocumentActionTool(JsonElement root, string sessionId)
+    {
+        var confirmed = root.TryGetProperty("user_confirmed", out var c) && c.ValueKind == JsonValueKind.True;
+        if (!confirmed)
+            return JsonSerializer.Serialize(new { error = "Refused: user_confirmed must be true." });
+        return ConfirmDocumentAction(sessionId);
+    }
+
+    private string ConfirmDocumentAction(string sessionId)
+    {
+        if (!_pendingDocuments.TryGet(sessionId, out var pending))
+            return JsonSerializer.Serialize(new { error = "No pending document action." });
+
+        try
+        {
+            switch (pending.Kind)
+            {
+                case PendingDocumentKind.NoteDelete:
+                    _documents.DeleteNote(pending.Name);
+                    _pendingDocuments.Clear(sessionId);
+                    return JsonSerializer.Serialize(new { deleted = true, name = pending.Name, applied = true });
+                case PendingDocumentKind.RewritePdf:
+                    var pdf = _documents.RewritePdf(
+                        pending.Name,
+                        pending.Title ?? pending.Name,
+                        pending.Body ?? "",
+                        overwrite: true,
+                        pending.SaveAs);
+                    _pendingDocuments.Clear(sessionId);
+                    return SerializeCreatedDocument(pdf);
+                case PendingDocumentKind.RewriteWord:
+                    var word = _documents.RewriteWord(
+                        pending.Name,
+                        pending.Title ?? pending.Name,
+                        pending.Body ?? "",
+                        overwrite: true,
+                        pending.SaveAs);
+                    _pendingDocuments.Clear(sessionId);
+                    return SerializeCreatedDocument(word);
+                case PendingDocumentKind.RewriteSpreadsheet:
+                    var sheet = _documents.RewriteSpreadsheet(
+                        pending.Name,
+                        PendingDocumentPayload.DeserializeHeaders(pending.HeadersJson),
+                        PendingDocumentPayload.DeserializeRows(pending.RowsJson),
+                        overwrite: true,
+                        pending.SaveAs);
+                    _pendingDocuments.Clear(sessionId);
+                    return SerializeCreatedDocument(sheet);
+                case PendingDocumentKind.RewritePresentation:
+                    var deck = _documents.RewritePresentation(
+                        pending.Name,
+                        pending.Title ?? pending.Name,
+                        PendingDocumentPayload.DeserializeSlides(pending.SlidesJson),
+                        overwrite: true,
+                        pending.SaveAs);
+                    _pendingDocuments.Clear(sessionId);
+                    return SerializeCreatedDocument(deck);
+                default:
+                    return JsonSerializer.Serialize(new { error = $"Unknown pending document kind: {pending.Kind}" });
+            }
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new { error = ex.Message });
+        }
+    }
+
+    private string DiscardDocumentAction(string sessionId)
+    {
+        var had = _pendingDocuments.TryGet(sessionId, out var pending);
+        _pendingDocuments.Clear(sessionId);
+        return JsonSerializer.Serialize(new
+        {
+            discarded = true,
+            previous = had ? pending.SummaryForUser : null
+        });
+    }
+
+    private string DiscardPendingDraft(string sessionId)
+    {
+        var had = _pendingMail.TryGetPendingDraft(sessionId, out _, out var summary);
+        _pendingMail.Clear(sessionId);
+        return JsonSerializer.Serialize(new
+        {
+            discarded = true,
+            previous = had ? summary : null
+        });
+    }
+
+    private static string SerializeCreatedDocument(DocumentWriteResult result) =>
+        JsonSerializer.Serialize(new
+        {
+            folder = result.Folder,
+            name = result.Name,
+            kind = result.Kind,
+            downloadUrl = result.DownloadUrl,
+            markdownLink = $"[Download {result.Name}]({result.DownloadUrl})",
+            instruction = "Paste markdownLink into your reply so the user can download the file.",
+            applied = true
+        });
+
+    private async Task<string> WebSearchToolAsync(JsonElement root, CancellationToken cancellationToken)
+    {
+        var query = RequiredString(root, "query");
+        var max = root.TryGetProperty("max", out var m) && m.TryGetInt32(out var n) ? n : 5;
+        var results = await _web.SearchAsync(query, max, cancellationToken).ConfigureAwait(false);
+        return JsonSerializer.Serialize(new { query, count = results.Count, results });
+    }
+
+    private async Task<string> FetchUrlToolAsync(JsonElement root, CancellationToken cancellationToken)
+    {
+        var url = RequiredString(root, "url");
+        var max = root.TryGetProperty("max_chars", out var m) && m.TryGetInt32(out var n) ? n : 12_000;
+        var page = await _web.FetchUrlAsync(url, max, cancellationToken).ConfigureAwait(false);
+        return JsonSerializer.Serialize(page);
+    }
+
+    private static string RequiredString(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var el) || el.ValueKind != JsonValueKind.String)
+            throw new ArgumentException($"Missing required string property: {name}");
+        var value = el.GetString();
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException($"Property '{name}' must be non-empty.");
+        return value;
+    }
+
+    private static IReadOnlyList<string> ParseStringArray(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var el) || el.ValueKind != JsonValueKind.Array)
+            return [];
+        return el.EnumerateArray()
+            .Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() ?? "" : e.ToString())
+            .ToList();
+    }
+
+    private static IReadOnlyList<IReadOnlyList<string>> ParseStringMatrix(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var el) || el.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var rows = new List<IReadOnlyList<string>>();
+        foreach (var row in el.EnumerateArray())
+        {
+            if (row.ValueKind != JsonValueKind.Array)
+            {
+                rows.Add([row.ToString()]);
+                continue;
+            }
+
+            rows.Add(row.EnumerateArray()
+                .Select(c => c.ValueKind == JsonValueKind.String ? c.GetString() ?? "" : c.ToString())
+                .ToList());
+        }
+
+        return rows;
+    }
+
+    private static IReadOnlyList<PresentationSlide> ParsePresentationSlides(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var el) || el.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var slides = new List<PresentationSlide>();
+        foreach (var item in el.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+                continue;
+
+            var title = item.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+            var bullets = new List<string>();
+            if (item.TryGetProperty("bullets", out var b) && b.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var bullet in b.EnumerateArray())
+                    bullets.Add(bullet.ValueKind == JsonValueKind.String ? bullet.GetString() ?? "" : bullet.ToString());
+            }
+
+            slides.Add(new PresentationSlide(title, bullets));
+        }
+
+        return slides;
     }
 
     private static DateTimeOffset ParseDateTimeOffset(string? value)

@@ -7,7 +7,7 @@ A **personal** AI assistant that reduces everyday busywork for one user:
 - Chat (Telegram / Web)
 - Mail triage, drafts, reminders (later)
 - Calendar awareness and meeting helpers (later)
-- Simple document / PDF generation (later)
+- Simple document tools (notes, PDF/Word/Excel create + upload/extract/rewrite)
 
 Not a company multi-agent platform.
 

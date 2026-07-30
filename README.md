@@ -12,6 +12,7 @@ Personal assistant for everyday use — **.NET 10** API, **Next.js** web UI, **G
 | Model | `gemini-3.5-flash-lite` (free-tier ~15 RPM / 500 RPD) |
 | Channels | Web first, then Discord (Telegram optional) |
 | Mail / Calendar | Gmail + Google Calendar tools |
+| Documents | Notes + PDF/Word/Excel create, upload, extract, rewrite |
 
 ## How we build
 

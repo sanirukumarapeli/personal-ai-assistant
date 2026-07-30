@@ -26,7 +26,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable
 
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = """
-            SELECT Role, Content
+            SELECT Role, Content, CreatedAtUtc
             FROM ChatTurns
             WHERE SessionId = $sessionId
             ORDER BY Id ASC;
@@ -37,10 +37,46 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            results.Add(new ChatTurn(reader.GetString(0), reader.GetString(1)));
+            DateTimeOffset? created = null;
+            if (!reader.IsDBNull(2) &&
+                DateTimeOffset.TryParse(reader.GetString(2), out var dto))
+            {
+                created = dto;
+            }
+
+            results.Add(new ChatTurn(reader.GetString(0), reader.GetString(1), created));
         }
 
         return results;
+    }
+
+    public async Task TruncateAfterAsync(
+        string sessionId,
+        int keepCount,
+        CancellationToken cancellationToken = default)
+    {
+        if (keepCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(keepCount));
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            DELETE FROM ChatTurns
+            WHERE SessionId = $sessionId
+              AND Id NOT IN (
+                  SELECT Id FROM ChatTurns
+                  WHERE SessionId = $sessionId
+                  ORDER BY Id ASC
+                  LIMIT $keepCount
+              );
+            """;
+        cmd.Parameters.AddWithValue("$sessionId", sessionId);
+        cmd.Parameters.AddWithValue("$keepCount", keepCount);
+        await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task AppendAsync(string sessionId, ChatTurn user, ChatTurn assistant, CancellationToken cancellationToken = default)
@@ -54,6 +90,60 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable
         await InsertAsync(connection, (SqliteTransaction)tx, sessionId, user, cancellationToken).ConfigureAwait(false);
         await InsertAsync(connection, (SqliteTransaction)tx, sessionId, assistant, cancellationToken).ConfigureAwait(false);
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<SessionSummary>> ListSessionsAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            SELECT SessionId,
+                   MAX(CreatedAtUtc) AS UpdatedAtUtc,
+                   (
+                       SELECT Content
+                       FROM ChatTurns t2
+                       WHERE t2.SessionId = t1.SessionId
+                       ORDER BY t2.Id DESC
+                       LIMIT 1
+                   ) AS Preview
+            FROM ChatTurns t1
+            GROUP BY SessionId
+            ORDER BY UpdatedAtUtc DESC;
+            """;
+
+        var results = new List<SessionSummary>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var id = reader.GetString(0);
+            var updatedRaw = reader.GetString(1);
+            var preview = reader.IsDBNull(2) ? "" : reader.GetString(2);
+            if (preview.Length > 80)
+                preview = preview[..80] + "…";
+
+            var updated = DateTimeOffset.TryParse(updatedRaw, out var dto)
+                ? dto
+                : DateTimeOffset.UtcNow;
+            results.Add(new SessionSummary(id, updated, preview));
+        }
+
+        return results;
+    }
+
+    public async Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = "DELETE FROM ChatTurns WHERE SessionId = $sessionId;";
+        cmd.Parameters.AddWithValue("$sessionId", sessionId);
+        await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task InsertAsync(
